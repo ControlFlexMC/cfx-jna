@@ -1,0 +1,114 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.github.ControlFlexMC'
+description = 'Bundles JNA for Forge 1.7.10'
+
+repositories {
+    // Forge 1.7.10's universal jar. Compile-only: nothing from it is packaged.
+    //
+    // metadataSources { artifact() } because that repository never published a
+    // POM for the 1.7.10 line — the jar is there, the module descriptor is not,
+    // and without this Gradle refuses to resolve it at all.
+    maven {
+        name = 'minecraftforge'
+        url = 'https://maven.minecraftforge.net/'
+        metadataSources {
+            artifact()
+        }
+    }
+    mavenCentral()
+}
+
+configurations {
+    // Held separately from `implementation` on purpose. This jar is not a
+    // dependency of anything we compile; it is payload that gets unpacked into
+    // the mod jar verbatim.
+    embedded
+}
+
+dependencies {
+    // @Mod and FMLLog only. Forge pulls in nothing transitively here, and the
+    // Minecraft classes those annotations do not reference are never needed.
+    compileOnly "net.minecraftforge:forge:${forgeVersion}:universal"
+
+    embedded "net.java.dev.jna:jna:${jnaVersion}"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // 1.7.10 runs on Java 8. `release` also fails the build if any post-8 API
+    // sneaks in, which plain sourceCompatibility would let through.
+    options.release = 8
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'jnaVersion', jnaVersion
+    filesMatching(['mcmod.info', 'cfxjna.properties']) {
+        expand version: project.version, jnaVersion: jnaVersion
+    }
+}
+
+jar {
+    archiveBaseName = 'cfx-jna'
+    archiveVersion = "${project.version}-mc1.7.10"
+
+    // JNA is unpacked flat rather than nested: Forge 1.7.10 has no jar-in-jar,
+    // and a jar dropped in mods/ is only useful if its classes are directly on
+    // the LaunchClassLoader's URL list. Nested jars would need a coremod to
+    // extract them before mod discovery, which is the WATERFrAMES approach.
+    from { configurations.embedded.collect { it.isDirectory() ? it : zipTree(it) } }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    // JNA's own manifest and any signature files would collide with ours.
+    exclude 'META-INF/MANIFEST.MF'
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA'
+
+    // META-INF/AL2.0, META-INF/LGPL2.1 and META-INF/LICENSE come along with the
+    // JNA classes above and must stay: Apache-2.0 requires the notices travel
+    // with the redistribution.
+    from('LICENSE')
+}
+
+// The built jar is the deliverable; make sure a plain `gradle build` proves it
+// contains what the mod list and the classloader need.
+tasks.register('verifyJar') {
+    group = 'verification'
+    description = 'Fails when the built jar is missing JNA, mcmod.info, or the mod class'
+
+    dependsOn tasks.named('jar')
+
+    doLast {
+        def jarFile = tasks.named('jar').get().archiveFile.get().asFile
+        def entries = new java.util.zip.ZipFile(jarFile).withCloseable { it.entries().collect { e -> e.name } } as Set
+
+        def required = [
+                'mcmod.info',
+                'com/ifels/cfxjna/CfxJna.class',
+                'com/sun/jna/Native.class',
+                'com/sun/jna/win32-x86-64/jnidispatch.dll',
+                'com/sun/jna/linux-x86-64/libjnidispatch.so',
+                'META-INF/AL2.0',
+        ]
+        def missing = required.findAll { !entries.contains(it) }
+        if (missing) {
+            throw new GradleException("verifyJar: missing entries in ${jarFile.name}: ${missing}")
+        }
+        if (entries.any { it.startsWith('net/minecraft/') || it.startsWith('cpw/mods/') }) {
+            throw new GradleException("verifyJar: Forge or Minecraft classes leaked into ${jarFile.name}")
+        }
+        logger.lifecycle("verifyJar: OK (${entries.size()} entries, ${jarFile.length()} bytes)")
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyJar')
+}

@@ -22,3 +22,11 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Build output
+build/
+.gradle/
+
+# The blanket *.jar above would swallow the wrapper, leaving every fresh clone
+# with a gradlew that cannot start. Keep it committed.
+!gradle/wrapper/gradle-wrapper.jar
